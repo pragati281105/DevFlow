@@ -1,0 +1,305 @@
+// DevFlow — Prisma schema
+// Datasource and generator
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum IssueStatus {
+  BACKLOG
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  DONE
+  CANCELLED
+}
+
+enum Priority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+  NO_PRIORITY
+}
+
+enum SprintStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+}
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  avatarUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sessions       Session[]
+  memberships    WorkspaceMember[]
+  comments       Comment[]
+  notifications  Notification[]
+  assignedIssues Issue[]         @relation("IssueAssignee")
+  activityEvents ActivityEvent[]
+  recoveryTokens RecoveryToken[]
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  csrfToken  String
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model RecoveryToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─── Workspace ───────────────────────────────────────────────────────────────
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members             WorkspaceMember[]
+  projects            Project[]
+  sprints             Sprint[]
+  labels              Label[]
+  notifications       Notification[]
+  githubInstallation  GitHubInstallation?
+}
+
+model WorkspaceMember {
+  id          String     @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        MemberRole @default(MEMBER)
+  createdAt   DateTime   @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+// ─── Project ─────────────────────────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  key         String   // e.g. "DEV"
+  description String?
+  archived    Boolean  @default(false)
+  issueCount  Int      @default(0) // monotonic counter for key generation
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issues    Issue[]
+
+  @@unique([workspaceId, key])
+  @@index([workspaceId])
+}
+
+// ─── Issue ───────────────────────────────────────────────────────────────────
+
+model Issue {
+  id          String      @id @default(cuid())
+  workspaceId String
+  projectId   String
+  key         String      // e.g. "DEV-42"
+  title       String
+  description String?
+  status      IssueStatus @default(TODO)
+  priority    Priority    @default(MEDIUM)
+  assigneeId  String?
+  dueDate     DateTime?
+  archived    Boolean     @default(false)
+  sortOrder   Float       @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assignee     User?           @relation("IssueAssignee", fields: [assigneeId], references: [id])
+  comments     Comment[]
+  labels       IssueLabel[]
+  sprintIssues SprintIssue[]
+  activities   ActivityEvent[]
+  prLinks      PullRequestLink[]
+
+  @@unique([projectId, key])
+  @@index([workspaceId, status])
+  @@index([workspaceId, assigneeId])
+  @@index([workspaceId, dueDate])
+  @@index([projectId])
+}
+
+// ─── Sprint ──────────────────────────────────────────────────────────────────
+
+model Sprint {
+  id          String       @id @default(cuid())
+  workspaceId String
+  name        String
+  goal        String?
+  startDate   DateTime
+  endDate     DateTime
+  status      SprintStatus @default(PLANNED)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sprintIssues SprintIssue[]
+
+  @@index([workspaceId])
+}
+
+model SprintIssue {
+  id       String   @id @default(cuid())
+  sprintId String
+  issueId  String
+  addedAt  DateTime @default(now())
+
+  sprint Sprint @relation(fields: [sprintId], references: [id], onDelete: Cascade)
+  issue  Issue  @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@unique([sprintId, issueId])
+}
+
+// ─── Comment & Label ─────────────────────────────────────────────────────────
+
+model Comment {
+  id        String   @id @default(cuid())
+  issueId   String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue  Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author User  @relation(fields: [authorId], references: [id])
+
+  @@index([issueId])
+}
+
+model Label {
+  id          String       @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  issueLabels IssueLabel[]
+
+  @@unique([workspaceId, name])
+}
+
+model IssueLabel {
+  id      String @id @default(cuid())
+  issueId String
+  labelId String
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, labelId])
+}
+
+// ─── Activity & Notifications ─────────────────────────────────────────────────
+
+model ActivityEvent {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  issueId           String?
+  actorId           String?
+  type              String
+  payload           Json
+  webhookDeliveryId String?  @unique // for GitHub webhook idempotency
+  createdAt         DateTime @default(now())
+
+  issue Issue? @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  actor User?  @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([issueId])
+  @@index([workspaceId])
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  type        String
+  payload     Json
+  read        Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+}
+
+// ─── GitHub integration ───────────────────────────────────────────────────────
+
+model GitHubInstallation {
+  id             String   @id @default(cuid())
+  workspaceId    String   @unique
+  installationId Int      @unique
+  accountLogin   String
+  createdAt      DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model PullRequestLink {
+  id        String   @id @default(cuid())
+  issueId   String
+  repoOwner String
+  repoName  String
+  prNumber  Int
+  prTitle   String
+  prUrl     String
+  status    String   @default("open")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue Issue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, repoOwner, repoName, prNumber])
+}
